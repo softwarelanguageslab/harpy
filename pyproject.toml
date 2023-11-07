@@ -1,0 +1,16 @@
+[project]
+name = "harpy"
+description = "Actor-reactor model in Python"
+readme = "README.md"
+version = "0.0.1"
+dependencies = [
+    "thespian >= 3.10",
+    "reactivex >= 4"
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["harpy"]
