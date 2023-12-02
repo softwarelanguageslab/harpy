@@ -1,60 +1,46 @@
+from harpy.ref import ReactorRef
+from harpy._baseActor import BaseActor
+
 from reactivex import Subject
-from thespian.actors import ActorTypeDispatcher
 
-class InitMsg:
-    def __init__(self, args, kwargs):
-        self.args = args
-        self.kwargs = kwargs
+class Reactor(BaseActor):
+    @staticmethod
+    def _wrapRef(addr): return ReactorRef(addr)
 
-class EmitMsg:
-    def __init__(self, source, value):
-        self.source = source
-        self.value = value
-
-class SubscribeMsg:
-    def __init__(self, topic):
-        self.topic = topic
-
-class Reactor(ActorTypeDispatcher):
     def __init__(self):
-        self._sources = {}
-        self._subscribers = []
-        self._init_complete = False
-        for name in self.__class__._source_names:
-            self._sources[name] = Subject()
+        super().__init__()
+        self._harpy_sources = {}
+        for name in self.__class__._harpy_reactor_source_names:
+            self._harpy_sources[name] = (Subject(), None)
 
-    def __init_actor__(self, constructor_args, constructor_kwargs):
-        subjects = (self._sources[name] for name in self.__class__._source_names)
+    def __init_actor__(self, *constructor_args, **constructor_kwargs):
+        subjects = (
+            self._harpy_sources[name][0] for name in
+            self.__class__._harpy_reactor_source_names
+        )
         args = tuple(subjects) + constructor_args
         self.observable = self.build_dag(*args, **constructor_kwargs)
-        self.observable.subscribe(lambda value: self._publish(value))
+        self.observable.subscribe(lambda value: self.emit(value))
 
-    # TODO: need actors to test this
-    def _publish(self, value):
-        for (recv, topic) in self._subscribers:
-            self.send(recv, EmitMsg(topic, value))
+    def receiveMsg_ReactToMsg(self, msg, sender):
+        (subj, prev) = self._harpy_sources[msg.source]
+        if prev: self._send_unsubscribe(prev)
+        self._harpy_sources[msg.source] = (subj, msg.ref.addr)
+        self._send_subscribe(msg.ref.addr)
 
-    def receiveMsg_InitMsg(self, msg, _sender):
-        if self._init_complete:
-            raise RuntimeError("Reactor {} received multiple init messages".format(self))
-        self.__init_actor__(msg.args, msg.kwargs)
-
-    def receiveMsg_EmitMsg(self, msg, _sender):
-        self._sources[msg.source].on_next(msg.value)
-
-    def receiveMsg_SubscribeMsg(self, msg, sender):
-        self._subscribers += (sender, msg.msg_or_source)
+    def receiveMsg_EmitMsg(self, msg, sender):
+        for (subj, ref) in self._harpy_sources.values():
+            if sender == ref: subj.on_next(msg.value)
 
     def receiveUnrecognizedMessage(self, msg, _sender):
         raise RuntimeError("Reactor {} received unrecognized message: {}".format(self, msg))
-
 
 # Creating reactors
 # -----------------
 
 def sources(*source_names):
     '''
-    Reactor sublass decorator
+    Reactor subclass decorator
 
     This decorator can be used to declare the sources a reactor will react to
     when defining a reactor as a `Reactor` subclass. It accepts an arbitary
@@ -77,7 +63,7 @@ def sources(*source_names):
     def reactor_class_wrapper(cls):
         assert issubclass(cls, Reactor), \
                "{} should subclass Reactor".format(cls)
-        cls._source_names = source_names
+        cls._harpy_reactor_source_names = source_names
         return cls
     return reactor_class_wrapper
 
@@ -87,14 +73,7 @@ def reacts_to(*source_names):
             return reactor_fn(*args, **kwargs)
 
         cls = type(reactor_fn.__name__, (Reactor,), {'build_dag': build_dag})
-        cls._source_names = source_names
+        cls._harpy_reactor_source_names = source_names
         cls.__module__ = reactor_fn.__module__
         return cls
     return reactor_fn_wrapper
-
-# Temp stuff
-
-def spawn_reactor(beh, *args, **kwargs):
-    obj = beh()
-    obj.__init_actor__(args, kwargs)
-    return obj
