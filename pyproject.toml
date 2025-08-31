@@ -3,6 +3,7 @@ name = "harpy"
 description = "Actor-reactor model in Python"
 readme = "README.md"
 version = "0.0.1"
+license = "GPL-3.0-only"
 dependencies = [
     "thespian >= 3.10",
     "reactivex >= 4"
