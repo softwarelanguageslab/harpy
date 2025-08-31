@@ -135,8 +135,8 @@ class FixedWindow(_WindowAssigner):
     elapses.
     """
     def __init__(self, length, offset=timedelta(seconds=0)):
-        self.length = length.seconds
-        self.offset = offset.seconds
+        self.length = length.total_seconds()
+        self.offset = offset.total_seconds()
 
     def windows_for(self, timestamp, _value):
         start = timestamp - ((timestamp - self.offset) % self.length)
@@ -161,9 +161,9 @@ class SlidingWindow(_WindowAssigner):
     be provided to change the alignment.
     """
     def __init__(self, frequency, length, offset=timedelta(seconds=0)):
-        self.frequency = frequency.seconds
-        self.length = length.seconds
-        self.offset = offset.seconds
+        self.frequency = frequency.total_seconds()
+        self.length = length.total_seconds()
+        self.offset = offset.total_seconds()
 
     def windows_for(self, timestamp, _value):
         last_start = timestamp - ((timestamp - self.offset) % self.frequency)
