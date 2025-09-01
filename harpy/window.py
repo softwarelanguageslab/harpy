@@ -29,97 +29,6 @@ from datetime import timedelta
 import time
 import math
 
-class Window(BaseActor):
-    """Window class.
-
-    A harpy window can be created by extending this class and decorating it
-    with a _window assigner_ (such as  `FixedWindow` or `SlidingWindow`). When
-    this is done, the subclass must define the `timestamp`, `add_to_window` and
-    `window_complete` functions documented below. Additionally, the `key`
-    method optionally be implemented.
-    """
-
-    @staticmethod
-    def _wrapRef(addr): return WindowRef(addr)
-
-    def __init__(self):
-        super().__init__()
-        self._harpy_subscriptions = []
-        self._harpy_window_panes = {}
-
-    def __init_actor__(self): pass
-
-    def timestamp(self, value):
-        """Obtain the timestamp of a given value.
-
-        This method must be implemented when defining a window subclass.
-        It receives the data record received by the window and must return a
-        timestamp which identifies the event or processing time at which the
-        data record "occurred".
-        """
-        raise NotImplementedError()
-
-    def key(self, value):
-        """Obtain the key of a given value.
-
-        This is an optional method which can be used to not only partition
-        incoming data records based on _when_ they occurred, but also on a key.
-        Data records will only be added to the same window if their timestamp
-        falls in the same window _and_ if they have the same key.
-        """
-        return None
-
-    def add_to_window(self, value, window):
-        """Add a data element to a window.
-
-        This method must be implemented by every window subclass. It receives
-        a data record (`value`) and the current contents of the window. It must
-        return a value which represents the new contents of the window. The new
-        contents of the window will be passed to `add_to_window` next time a
-        data element is received by this particular window.
-
-        When the window is empty, the value of `window` will be `None`.
-        """
-        raise NotImplementedError()
-
-    def window_complete(self, window):
-        """Finalize a window.
-
-        This method must be implemented by every window subclass. It is called
-        when the trigger of the window is triggered. Said otherwise, it is
-        triggered when the window is "complete". It receives the window and may
-        use `emit` to produce some data for the window.
-        """
-        raise NotImplementedError()
-
-    def receiveMsg_ReactToMsg(self, msg, sender):
-        self._harpy_subscriptions.append((msg.ref.addr, msg.stream))
-        self._send_subscribe(msg.ref.addr, msg.stream)
-
-    def receiveMsg_EmitMsg(self, msg, sender):
-        key = self.key(msg.value)
-        timestamp = self.timestamp(msg.value)
-        windows = self._harpy_window_assigner.windows_for(timestamp, msg.value)
-
-        # Add objects to the window
-        for window in windows:
-            pane = self._harpy_window_panes.get((window, key))
-            updated = self.add_to_window(msg.value, pane)
-            self._harpy_window_panes[(window, key)] = updated
-
-        # Trigger elapsed windows
-        # TODO: improve trigger logic later
-        for ((start, end), key) in list(self._harpy_window_panes.keys()):
-            if timestamp > end:
-                pane = self._harpy_window_panes[((start, end), key)]
-                self.window_complete(pane)
-                del self._harpy_window_panes[((start, end), key)]
-
-    def receiveUnrecognizedMessage(self, msg, _sender):
-        raise RuntimeError(
-            "Window {} received unrecognized message: {}".format(self, msg)
-        )
-
 # ---------------- #
 # Window Assigners #
 # ---------------- #
@@ -192,3 +101,121 @@ class SlidingWindow(_WindowAssigner):
             window = window - self.frequency
 
         return windows
+
+# -------- #
+# Triggers #
+# -------- #
+
+class _Trigger:
+    tick_time = None
+
+    def __call__(self, cls):
+        assert issubclass(cls, Window), "{} should subclass Window".format(cls)
+        cls._harpy_window_trigger = self
+        return cls
+
+class EventTimeElapsedTrigger(_Trigger):
+    def on_element(self, _element, key, timestamp, window):
+        for ((start, end), key) in list(window._harpy_window_panes.keys()):
+            if timestamp > end:
+                pane = window._harpy_window_panes[((start, end), key)]
+                window.window_complete(pane)
+                del window._harpy_window_panes[((start, end), key)]
+
+# ------- #
+# Windows #
+# ------- #
+
+class Window(BaseActor):
+    """Window class.
+
+    A harpy window can be created by extending this class and decorating it
+    with a _window assigner_ (such as  `FixedWindow` or `SlidingWindow`). When
+    this is done, the subclass must define the `timestamp`, `add_to_window` and
+    `window_complete` functions documented below. Additionally, the `key`
+    method may optionally be implemented.
+    """
+    _harpy_window_trigger = EventTimeElapsedTrigger()
+
+    @staticmethod
+    def _wrapRef(addr): return WindowRef(addr)
+
+    def __init__(self):
+        super().__init__()
+        self._harpy_subscriptions = []
+        self._harpy_window_panes = {}
+
+    def __init_actor__(self):
+        tick = self._harpy_window_trigger.tick_time
+        if tick: self._harpy_context.wake_up_after(tick, None)
+
+    def timestamp(self, value):
+        """Obtain the timestamp of a given value.
+
+        This method must be implemented when defining a window subclass.
+        It receives the data record received by the window and must return a
+        timestamp which identifies the event or processing time at which the
+        data record "occurred".
+        """
+        raise NotImplementedError()
+
+    def key(self, value):
+        """Obtain the key of a given value.
+
+        This is an optional method which can be used to not only partition
+        incoming data records based on _when_ they occurred, but also on a key.
+        Data records will only be added to the same window if their timestamp
+        falls in the same window _and_ if they have the same key.
+        """
+        return None
+
+    def add_to_window(self, value, window):
+        """Add a data element to a window.
+
+        This method must be implemented by every window subclass. It receives
+        a data record (`value`) and the current contents of the window. It must
+        return a value which represents the new contents of the window. The new
+        contents of the window will be passed to `add_to_window` next time a
+        data element is received by this particular window.
+
+        When the window is empty, the value of `window` will be `None`.
+        """
+        raise NotImplementedError()
+
+    def window_complete(self, window):
+        """Finalize a window.
+
+        This method must be implemented by every window subclass. It is called
+        when the trigger of the window is triggered. Said otherwise, it is
+        triggered when the window is "complete". It receives the window and may
+        use `emit` to produce some data for the window.
+        """
+        raise NotImplementedError()
+
+    def receiveMsg_ReactToMsg(self, msg, sender):
+        self._harpy_subscriptions.append((msg.ref.addr, msg.stream))
+        self._send_subscribe(msg.ref.addr, msg.stream)
+
+    def receiveMsg_EmitMsg(self, msg, sender):
+        key = self.key(msg.value)
+        timestamp = self.timestamp(msg.value)
+        windows = self._harpy_window_assigner.windows_for(timestamp, msg.value)
+
+        # Add objects to the window
+        for window in windows:
+            pane = self._harpy_window_panes.get((window, key))
+            updated = self.add_to_window(msg.value, pane)
+            self._harpy_window_panes[(window, key)] = updated
+
+        # Trigger elapsed windows
+        self._harpy_window_trigger.on_element(msg.value, key, timestamp, self)
+
+    def receiveMsg_WakeupMessage(self, _msg, _sender):
+        self._harpy_window_trigger.on_tick(self)
+        tick = self._harpy_window_trigger.tick_time
+        self._harpy_context.wake_up_after(tick, None)
+
+    def receiveUnrecognizedMessage(self, msg, _sender):
+        raise RuntimeError(
+            "Window {} received unrecognized message: {}".format(self, msg)
+        )
